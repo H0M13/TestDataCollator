@@ -6,10 +6,43 @@ const nodeEndpoints = process.env.NODE_ENDPOINTS;
 
 const contentHashesEnvVar = process.env.CONTENT_HASHES;
 
-const requestModerationLabelsForInstanceAsync = async (
+type ResultsHolder = {
+  identifier: string;
+  axiosInstance: AxiosInstance;
+  requests: Array<Promise<any>>;
+  results?: Array<any>;
+};
+
+const executeRequests = async (resultsHolders: Array<ResultsHolder>) => {
+  const results = await Promise.all(
+    resultsHolders.map(resultsHolder =>
+      executeRequestsInResultHolder(resultsHolder)
+    )
+  );
+
+  console.log(results);
+};
+
+const executeRequestsInResultHolder = async (resultHolder: ResultsHolder) => {
+  const results = {
+    ...resultHolder,
+    results: await Promise.all(resultHolder.requests)
+  };
+
+  return results;
+};
+
+const createAxiosInstance = (endpoint: string) =>
+  axios.create({
+    baseURL: endpoint,
+    timeout: 10000,
+    headers: { "Content-Type": "application/json" }
+  });
+
+const createModerationLabelRequests = (
   instance: AxiosInstance,
   contentHashes: Array<string>
-) => {
+): Array<Promise<any>> => {
   const requests = generateModerationLabelRequests(instance, contentHashes);
 
   const DELAY_PER_REQUEST = 1000;
@@ -18,9 +51,7 @@ const requestModerationLabelsForInstanceAsync = async (
     appendDelayToPromise(request, index * DELAY_PER_REQUEST)
   );
 
-  const results = await Promise.all(requestsWithDelay);
-
-  console.log(results.length);
+  return requestsWithDelay;
 };
 
 const generateModerationLabelRequests = (
@@ -36,6 +67,21 @@ const generateModerationLabelRequests = (
     })
   );
 
+const createEndpointResultsHolders = (
+  endpoints: Array<string>,
+  contentHashes: Array<string>
+): Array<ResultsHolder> => {
+  return endpoints.map(endpoint => {
+    const axiosInstance = createAxiosInstance(endpoint);
+
+    return {
+      identifier: endpoint,
+      axiosInstance,
+      requests: createModerationLabelRequests(axiosInstance, contentHashes)
+    };
+  });
+};
+
 const appendDelayToPromise = (
   promise: Promise<any>,
   delayInMs: number
@@ -49,19 +95,17 @@ if (nodeEndpoints === undefined) {
 } else {
   const endpointsArray: Array<string> = nodeEndpoints.split(" ");
 
-  const contentHashes = contentHashesEnvVar === undefined ? [] : contentHashesEnvVar.split(" ")
-
   // TODO: Regex to check all entries in the array are valid URLs
 
-  const axiosInstances = endpointsArray.map(endpoint => {
-    return axios.create({
-      baseURL: endpoint,
-      timeout: 10000,
-      headers: { "Content-Type": "application/json" }
-    });
-  });
+  const contentHashes =
+    contentHashesEnvVar === undefined ? [] : contentHashesEnvVar.split(" ");
 
-  axiosInstances.forEach(axiosInstance => {
-    requestModerationLabelsForInstanceAsync(axiosInstance, contentHashes);
-  });
+  // TODO: Regex to check all content hashes are valid?
+
+  const endpointResultsHolders = createEndpointResultsHolders(
+    endpointsArray,
+    contentHashes
+  );
+
+  executeRequests(endpointResultsHolders);
 }
