@@ -1,35 +1,51 @@
 import axios, { AxiosInstance, AxiosResponse } from "axios";
 import * as dotenv from "dotenv";
 dotenv.config();
+import { exportAsCsv } from "./csvExport";
+import type { FormattedResult, NodeRequestsManager, LabelsRequest, NodeResults } from "./commonTypes"
 
 const nodeEndpoints = process.env.NODE_ENDPOINTS;
 
 const contentHashesEnvVar = process.env.CONTENT_HASHES;
 
-type ResultsHolder = {
-  identifier: string;
-  axiosInstance: AxiosInstance;
-  requests: Array<Promise<any>>;
-  results?: Array<any>;
-};
-
-const executeRequests = async (resultsHolders: Array<ResultsHolder>) => {
-  const results = await Promise.all(
-    resultsHolders.map(resultsHolder =>
-      executeRequestsInResultHolder(resultsHolder)
+const executeRequests = async (requestsManagers: Array<NodeRequestsManager>): Promise<Array<NodeResults>> => {
+  return await Promise.all(
+    requestsManagers.map(requestsManager =>
+      executeRequestsInManager(requestsManager)
     )
   );
-
-  console.log(results);
 };
 
-const executeRequestsInResultHolder = async (resultHolder: ResultsHolder) => {
-  const results = {
-    ...resultHolder,
-    results: await Promise.all(resultHolder.requests)
-  };
+const executeRequestsInManager = async (requestsManager: NodeRequestsManager): Promise<NodeResults> => {
+  const results = await Promise.all(
+    requestsManager.requests.map(labelsRequest => executeRequest(labelsRequest))
+  );
 
-  return results;
+  return {
+    identifier: requestsManager.identifier,
+    results
+  };
+};
+
+const executeRequest = async (
+  labelsRequest: LabelsRequest
+): Promise<FormattedResult> => {
+  const {
+    data: { result }
+  } = await labelsRequest.request;
+
+  const splitResult = result.split(",");
+
+  return {
+    contentHash: labelsRequest.contentHash,
+    result: {
+      adult: splitResult[0],
+      suggestive: splitResult[1],
+      violence: splitResult[2],
+      visuallyDisturbing: splitResult[3],
+      hateSymbols: splitResult[4]
+    }
+  };
 };
 
 const createAxiosInstance = (endpoint: string) =>
@@ -42,35 +58,43 @@ const createAxiosInstance = (endpoint: string) =>
 const createModerationLabelRequests = (
   instance: AxiosInstance,
   contentHashes: Array<string>
-): Array<Promise<any>> => {
-  const requests = generateModerationLabelRequests(instance, contentHashes);
+): Array<LabelsRequest> => {
+  const labelRequests = generateModerationLabelRequests(
+    instance,
+    contentHashes
+  );
 
   const DELAY_PER_REQUEST = 1000;
 
-  const requestsWithDelay = requests.map((request, index) =>
-    appendDelayToPromise(request, index * DELAY_PER_REQUEST)
-  );
+  const labelRequestsWithDelay = labelRequests.map((labelRequest, index) => ({
+    ...labelRequest,
+    request: appendDelayToPromise(
+      labelRequest.request,
+      index * DELAY_PER_REQUEST
+    )
+  }));
 
-  return requestsWithDelay;
+  return labelRequestsWithDelay;
 };
 
 const generateModerationLabelRequests = (
   instance: AxiosInstance,
   contentHashes: Array<string>
-): Array<Promise<AxiosResponse>> =>
-  contentHashes.map(contentHash =>
-    instance.post("/", {
+): Array<LabelsRequest> =>
+  contentHashes.map(contentHash => ({
+    contentHash,
+    request: instance.post("/", {
       id: 0,
       data: {
         hash: contentHash
       }
     })
-  );
+  }));
 
 const createEndpointResultsHolders = (
   endpoints: Array<string>,
   contentHashes: Array<string>
-): Array<ResultsHolder> => {
+): Array<NodeRequestsManager> => {
   return endpoints.map(endpoint => {
     const axiosInstance = createAxiosInstance(endpoint);
 
@@ -90,6 +114,20 @@ const appendDelayToPromise = (
     value => new Promise(resolve => setTimeout(() => resolve(value), delayInMs))
   );
 
+const main = async (
+  endpointsArray: Array<string>,
+  contentHashes: Array<string>
+) => {
+  const endpointResultsHolders = createEndpointResultsHolders(
+    endpointsArray,
+    contentHashes
+  );
+
+  const results = await executeRequests(endpointResultsHolders);
+
+  const outputResult = await exportAsCsv(results);
+};
+
 if (nodeEndpoints === undefined) {
   throw new Error("NODE_ENDPOINTS environment variable is required");
 } else {
@@ -102,10 +140,5 @@ if (nodeEndpoints === undefined) {
 
   // TODO: Regex to check all content hashes are valid?
 
-  const endpointResultsHolders = createEndpointResultsHolders(
-    endpointsArray,
-    contentHashes
-  );
-
-  executeRequests(endpointResultsHolders);
+  main(endpointsArray, contentHashes);
 }
