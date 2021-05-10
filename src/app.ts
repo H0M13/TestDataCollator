@@ -125,7 +125,7 @@ const main = async (
 
   const results = await executeRequests(endpointResultsHolders);
 
-  const outputResult = await exportAsCsv(results);
+  await exportAsCsv(results);
 };
 
 if (nodeEndpoints === undefined) {
